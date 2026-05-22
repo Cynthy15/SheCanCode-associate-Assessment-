@@ -11,24 +11,24 @@ Payment processors face a critical challenge: network timeouts cause clients to 
 ```mermaid
 flowchart TD
 
-A[Client Sends POST /process-payment] --> B{Idempotency-Key Present?}
+A[Client Sends Payment Request] --> B[API Gateway / Spring Boot Controller]
 
-B -- No --> C[Return 400 Bad Request]
+B --> C{Idempotency-Key exists?}
 
-B -- Yes --> D{Check Key in Database}
+C -- No --> D[Validate Request Body]
+D --> E[Start Payment Processing]
+E --> F[Simulate Processing Delay 2s]
+F --> G[Charge Customer]
+G --> H[Save Response + Idempotency Key]
+H --> I[Return 201 Created + Response]
 
-D -- No --> E[Save Request Status = PROCESSING]
-E --> F[Acquire Lock]
-F --> G[Simulate Payment (2 seconds)]
-G --> H[Save Response + Mark COMPLETED]
-H --> I[Return 201 Created]
+C -- Yes --> J{Same Request Body?}
 
-D -- Yes --> J{Same Request Body?}
+J -- Yes --> K[Return Cached Response]
+K --> L[Add Header X-Cache-Hit: true]
 
-J -- No --> K[Return 409 Conflict]
-
-J -- Yes --> L[Return Cached Response]
-L --> M[Add Header X-Cache-Hit: true]
+J -- No --> M[Return 409 / 422 Error]
+M --> N["Idempotency key reused with different payload"]
 
 ```
 
