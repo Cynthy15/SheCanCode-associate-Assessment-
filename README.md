@@ -6,61 +6,72 @@ A robust payment processing system with idempotency guarantees to prevent double
 
 Payment processors face a critical challenge: network timeouts cause clients to retry requests, leading to double-charging. This system ensures that duplicate requests are safely handled, processing payments exactly once.
 
-## Architecture
+## Architecture Flowchart
 
-### System Flow
+```mermaid
+flowchart TD
 
+A[Client Sends POST /process-payment] --> B{Idempotency-Key Present?}
+
+B -- No --> C[Return 400 Bad Request]
+
+B -- Yes --> D{Check Key in Database}
+
+D -- No --> E[Save Request Status = PROCESSING]
+E --> F[Acquire Lock]
+F --> G[Simulate Payment (2 seconds)]
+G --> H[Save Response + Mark COMPLETED]
+H --> I[Return 201 Created]
+
+D -- Yes --> J{Same Request Body?}
+
+J -- No --> K[Return 409 Conflict]
+
+J -- Yes --> L[Return Cached Response]
+L --> M[Add Header X-Cache-Hit: true]
+
+```
+
+---
+
+## Sequence Diagram 
+
+```mermaid
 sequenceDiagram
-    participant Client
-    participant Controller
-    participant Service
-    participant Repository
-    participant Database
 
-    Client->>Controller: POST /process-payment<br/>Header: Idempotency-Key<br/>Body: {amount, currency}
-    
-    Controller->>Controller: Validate Headers & Body
-    Controller->>Service: processPayment(key, request)
-    
-    Service->>Service: Convert request to JSON<br/>Generate SHA-256 hash
-    
-    Service->>Repository: findByIdempotencyKeyWithLock(key)
-    Repository->>Database: SELECT with PESSIMISTIC_WRITE lock
-    
-    alt Record Exists
-        Database-->>Repository: Return existing record
-        Repository-->>Service: IdempotencyRecord found
-        
-        alt Request Hash Matches
-            alt Status = COMPLETED
-                Service->>Service: Deserialize cached response
-                Service-->>Controller: Return cached response<br/>X-Cache-Hit: true
-            else Status = PROCESSING
-                Service->>Service: Wait for lock release<br/>(In-flight handling)
-                Service->>Repository: Re-fetch record
-                Service-->>Controller: Return result
-            end
-        else Request Hash Different
-            Service-->>Controller: Throw IdempotencyKeyMismatchException
-            Controller-->>Client: 422 Unprocessable Entity
-        end
-        
-    else Record Does Not Exist
-        Service->>Repository: save(new record with PROCESSING status)
-        Repository->>Database: INSERT record
-        
-        Service->>Service: Execute payment processing<br/>(2 second delay)
-        
-        Service->>Service: Generate PaymentResponse<br/>with transaction ID
-        
-        Service->>Repository: Update record<br/>(save response, set COMPLETED)
-        Repository->>Database: UPDATE record
-        
-        Service-->>Controller: Return response<br/>X-Cache-Hit: false<br/>Status: 201 Created
-    end
-    
-    Controller-->>Client: HTTP Response with headers
+participant Client
+participant API
+participant Database
+participant Lock
+participant PaymentService
 
+Client->>API: POST /process-payment (Idempotency-Key)
+
+API->>Database: Check if key exists
+
+alt First Request
+Database-->>API: Key not found
+
+API->>Database: Save request as PROCESSING
+API->>Lock: Acquire lock for key
+API->>PaymentService: Process payment (2s delay)
+PaymentService-->>API: Payment success
+API->>Database: Save response + mark COMPLETED
+API->>Lock: Release lock
+API-->>Client: 201 Created (Charged 100 RWF)
+
+else Duplicate Request (Same Payload)
+Database-->>API: Key exists
+API->>Database: Fetch stored response
+API-->>Client: Return cached response
+Note over API: X-Cache-Hit: true
+
+else Same Key Different Payload
+Database-->>API: Key exists
+API-->>Client: 409 Conflict
+end
+
+```
 ### Technology Stack
 
 - **Backend**: Java 17, Spring Boot 3.2.0
